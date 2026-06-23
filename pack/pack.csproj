@@ -1,0 +1,42 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- 自包含单文件发布: 把 .NET 运行时一起塞进一个 exe, 目标机器零安装即可运行 -->
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net7.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+
+    <!-- 产物 exe 名 + 文件属性里的中文元数据 -->
+    <AssemblyName>Chrome多开生成器</AssemblyName>
+    <Product>Chrome多开生成器</Product>
+    <AssemblyTitle>Chrome 多开快捷方式生成器</AssemblyTitle>
+    <Description>批量生成 Chrome 多账号分身快捷方式 (自包含单文件版, 免安装 .NET)</Description>
+    <Company>Chrome Matrix Tools</Company>
+    <Version>2.0.0</Version>
+    <FileVersion>2.0.0.0</FileVersion>
+    <ApplicationIcon>..\app.ico</ApplicationIcon>
+
+    <!-- 单文件 / 自包含 / 压缩, 减小体积并免安装 -->
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <SelfContained>true</SelfContained>
+    <PublishSingleFile>true</PublishSingleFile>
+    <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+    <DebugType>none</DebugType>
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+  </PropertyGroup>
+
+  <!-- 只编译主程序源码 (排除 MakeIcon.cs, 它有自己的 Main) -->
+  <ItemGroup>
+    <Compile Include="..\ChromeShortcutGenerator.cs" />
+  </ItemGroup>
+
+  <!-- .NET 7 下访问注册表(探测 Chrome 路径)需要此包 -->
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Win32.Registry" Version="5.0.0" />
+  </ItemGroup>
+
+</Project>
