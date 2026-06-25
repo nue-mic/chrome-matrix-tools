@@ -553,7 +553,7 @@ namespace ChromeShortcutGenerator
                 {
                     TextRenderer.DrawText(g, titleText, tf, new Point(52, 13), Theme.TextPrimary);
                     Size ts = TextRenderer.MeasureText(g, titleText, tf);
-                    TextRenderer.DrawText(g, "v2.0", vf,
+                    TextRenderer.DrawText(g, "v2.1", vf,
                         new Point(52 + ts.Width + 2, 17), Theme.TextSecondary);
                 }
             };
