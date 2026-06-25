@@ -92,6 +92,7 @@ namespace ChromeShortcutGenerator
     class PillButton : Button
     {
         public bool Primary = true;
+        public bool Danger = false; // 危险操作: 红色填充 (如"清空重建")
         private bool hover = false;
         public PillButton()
         {
@@ -113,6 +114,7 @@ namespace ChromeShortcutGenerator
             int radius = Math.Min(this.Height / 2, 12);
             Color fill, txt, border;
             if (!this.Enabled) { fill = Color.FromArgb(0xCB, 0xD0, 0xDA); txt = Color.White; border = fill; }
+            else if (Danger) { fill = hover ? Color.FromArgb(0xC4, 0x0E, 0x1E) : Theme.CloseHover; txt = Color.White; border = fill; }
             else if (Primary) { fill = hover ? Theme.AccentHover : Theme.Accent; txt = Color.White; border = fill; }
             else { fill = hover ? Theme.AccentLight : Color.White; txt = Theme.Accent; border = Theme.Accent; }
             using (GraphicsPath path = Theme.Rounded(r, radius))
@@ -195,6 +197,90 @@ namespace ChromeShortcutGenerator
                 Rectangle fr = new Rectangle(r.X, r.Y, (int)w, r.Height);
                 using (GraphicsPath fp = Theme.Rounded(fr, 4))
                 using (SolidBrush fb = new SolidBrush(Theme.Accent)) g.FillPath(fb, fp);
+            }
+        }
+    }
+
+    // ---------- 通用选择对话框 (主题风格, 竖排按钮; 返回点击索引, -1=取消/关闭) ----------
+    class ChoiceDialog : Form
+    {
+        private int _result = -1;
+        public int ChosenIndex { get { return _result; } }
+
+        protected override CreateParams CreateParams
+        {
+            get { CreateParams cp = base.CreateParams; cp.ClassStyle |= 0x00020000; return cp; } // CS_DROPSHADOW
+        }
+
+        private ChoiceDialog(Form owner, string title, string message, string[] buttons, int dangerIndex)
+        {
+            this.FormBorderStyle = FormBorderStyle.None;
+            this.StartPosition = FormStartPosition.CenterParent;
+            this.BackColor = Theme.CardBg;
+            this.ShowInTaskbar = false;
+            this.MaximizeBox = false; this.MinimizeBox = false;
+            this.KeyPreview = true;
+            this.DoubleBuffered = true;
+            this.Font = owner.Font;
+
+            const int W = 460, pad = 22;
+            int y = pad;
+
+            Label lblTitle = new Label();
+            lblTitle.Text = title; lblTitle.AutoSize = true;
+            lblTitle.Font = new Font(this.Font.FontFamily, 11.5F, FontStyle.Bold);
+            lblTitle.ForeColor = Theme.Accent;
+            lblTitle.BackColor = Theme.CardBg;
+            lblTitle.Location = new Point(pad, y);
+            this.Controls.Add(lblTitle);
+            y += lblTitle.PreferredHeight + 12;
+
+            Label lblMsg = new Label();
+            lblMsg.Text = message;
+            lblMsg.AutoSize = false;
+            lblMsg.ForeColor = Theme.TextPrimary;
+            lblMsg.BackColor = Theme.CardBg;
+            Size msgSize = TextRenderer.MeasureText(message, this.Font,
+                new Size(W - pad * 2, 0), TextFormatFlags.WordBreak);
+            lblMsg.SetBounds(pad, y, W - pad * 2, msgSize.Height + 4);
+            this.Controls.Add(lblMsg);
+            y += lblMsg.Height + 18;
+
+            for (int i = 0; i < buttons.Length; i++)
+            {
+                int idx = i;
+                PillButton b = new PillButton();
+                b.Text = buttons[i];
+                b.Primary = (i == 0);            // 第一个=推荐主操作
+                b.Danger = (i == dangerIndex);   // 危险操作=红色
+                b.BackColor = Theme.CardBg;
+                b.SetBounds(pad, y, W - pad * 2, 36);
+                b.Click += delegate { _result = idx; this.Close(); };
+                this.Controls.Add(b);
+                y += 36 + 10;
+            }
+
+            this.ClientSize = new Size(W, (y - 10) + pad);
+
+            this.KeyDown += delegate(object s, KeyEventArgs e)
+            {
+                if (e.KeyCode == Keys.Escape) { _result = -1; this.Close(); }
+            };
+        }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            base.OnPaint(e);
+            using (Pen p = new Pen(Theme.CardBorder))
+                e.Graphics.DrawRectangle(p, 0, 0, this.Width - 1, this.Height - 1);
+        }
+
+        public static int Show(Form owner, string title, string message, string[] buttons, int dangerIndex)
+        {
+            using (ChoiceDialog d = new ChoiceDialog(owner, title, message, buttons, dangerIndex))
+            {
+                d.ShowDialog(owner);
+                return d.ChosenIndex;
             }
         }
     }
@@ -304,7 +390,7 @@ namespace ChromeShortcutGenerator
             }
             catch { /* 取不到图标就用默认, 不影响运行 */ }
             this.Font = MakeUiFont(9F);
-            this.ClientSize = new Size(720, 800);
+            this.ClientSize = new Size(720, 850);
             this.FormBorderStyle = FormBorderStyle.None;
             this.BackColor = Theme.BgWindow;
             this.StartPosition = FormStartPosition.CenterScreen;
@@ -348,7 +434,7 @@ namespace ChromeShortcutGenerator
             chkDesktop = AddCheck(c2, "生成后在桌面创建该入口", 280, 116, 300); chkDesktop.Checked = true;
 
             // 卡片3: 模板(可选)
-            CardPanel c3 = MakeCard(16, 446, 688, 100);
+            CardPanel c3 = MakeCard(16, 446, 688, 150);
             AddTitle(c3, "模板（可选）", 18, 12);
             chkUseTemplate = AddCheck(c3, "使用模板", 18, 44, 90);
             chkUseTemplate.CheckedChanged += delegate { UpdateTemplateEnabled(); };
@@ -357,30 +443,49 @@ namespace ChromeShortcutGenerator
             chkExcludeCache = AddCheck(c3, "排除缓存目录（复制更快、更省空间；登录态/扩展/设置保留）", 110, 74, 540);
             chkExcludeCache.Checked = true;
 
+            // 模板制作工具: 一键创建模板(文件夹+快捷方式) / 直接打开模板做配置 / 打开所在文件夹
+            PillButton btnCreateTpl = new PillButton();
+            btnCreateTpl.Text = "一键创建模板"; btnCreateTpl.Primary = true; btnCreateTpl.BackColor = Theme.CardBg;
+            btnCreateTpl.SetBounds(18, 106, 150, 28);
+            btnCreateTpl.Click += delegate { OnCreateTemplate(); };
+            c3.Controls.Add(btnCreateTpl);
+
+            PillButton btnOpenTpl = new PillButton();
+            btnOpenTpl.Text = "打开模板"; btnOpenTpl.Primary = false; btnOpenTpl.BackColor = Theme.CardBg;
+            btnOpenTpl.SetBounds(180, 106, 120, 28);
+            btnOpenTpl.Click += delegate { LaunchTemplate(true); };
+            c3.Controls.Add(btnOpenTpl);
+
+            PillButton btnOpenTplDir = new PillButton();
+            btnOpenTplDir.Text = "打开模板文件夹"; btnOpenTplDir.Primary = false; btnOpenTplDir.BackColor = Theme.CardBg;
+            btnOpenTplDir.SetBounds(312, 106, 150, 28);
+            btnOpenTplDir.Click += delegate { OpenTemplateFolder(); };
+            c3.Controls.Add(btnOpenTplDir);
+
             // 操作按钮
             btnGenerate = new PillButton();
             btnGenerate.Text = "一键生成";
             btnGenerate.Primary = true;
             btnGenerate.BackColor = Theme.BgWindow;
             btnGenerate.Font = new Font(this.Font.FontFamily, 10.5F, FontStyle.Bold);
-            btnGenerate.SetBounds(16, 558, 200, 40);
+            btnGenerate.SetBounds(16, 608, 200, 40);
             btnGenerate.Click += delegate { OnGenerate(); };
             this.Controls.Add(btnGenerate);
 
             PillButton btnOpen = new PillButton();
             btnOpen.Text = "打开输出文件夹"; btnOpen.Primary = false; btnOpen.BackColor = Theme.BgWindow;
-            btnOpen.SetBounds(228, 558, 150, 40);
+            btnOpen.SetBounds(228, 608, 150, 40);
             btnOpen.Click += delegate { OpenOutputFolder(); };
             this.Controls.Add(btnOpen);
 
             PillButton btnDesktopBtn = new PillButton();
             btnDesktopBtn.Text = "建桌面入口"; btnDesktopBtn.Primary = false; btnDesktopBtn.BackColor = Theme.BgWindow;
-            btnDesktopBtn.SetBounds(390, 558, 150, 40);
+            btnDesktopBtn.SetBounds(390, 608, 150, 40);
             btnDesktopBtn.Click += delegate { OnCreateDesktopEntry(); };
             this.Controls.Add(btnDesktopBtn);
 
             // 卡片4: 实时日志
-            CardPanel c4 = MakeCard(16, 610, 688, 150);
+            CardPanel c4 = MakeCard(16, 660, 688, 150);
             AddTitle(c4, "实时日志", 18, 10);
             txtLog = new TextBox();
             txtLog.SetBounds(16, 36, 656, 104);
@@ -394,11 +499,11 @@ namespace ChromeShortcutGenerator
 
             // 进度
             progress = new FlatProgress();
-            progress.SetBounds(16, 770, 540, 18);
+            progress.SetBounds(16, 820, 540, 18);
             this.Controls.Add(progress);
 
             lblProgress = new Label();
-            lblProgress.SetBounds(566, 769, 140, 20);
+            lblProgress.SetBounds(566, 819, 140, 20);
             lblProgress.Text = "就绪";
             lblProgress.ForeColor = Theme.TextSecondary;
             lblProgress.BackColor = Theme.BgWindow;
@@ -419,8 +524,8 @@ namespace ChromeShortcutGenerator
             lblProgress.Anchor = AnchorStyles.Bottom | AnchorStyles.Right;
 
             // 默认把窗口开大一些(锚定生效后会自动把卡片/输入框横向撑开), 并设定可缩放的最小尺寸
-            this.MinimumSize = new Size(720, 720);
-            this.ClientSize = new Size(944, 824);
+            this.MinimumSize = new Size(720, 770);
+            this.ClientSize = new Size(944, 874);
         }
 
         private void BuildTitleBar()
@@ -602,10 +707,11 @@ namespace ChromeShortcutGenerator
 
         private void UpdateTemplateEnabled()
         {
-            bool on = chkUseTemplate.Checked;
-            txtTemplate.Enabled = on;
-            btnBrowseTemplate.Enabled = on;
-            chkExcludeCache.Enabled = on;
+            // 模板路径框/浏览/制作按钮始终可用 (要先做好模板, 再勾"使用模板");
+            // "排除缓存"只在复制时生效, 故仅它跟随"使用模板"。
+            txtTemplate.Enabled = true;
+            btnBrowseTemplate.Enabled = true;
+            chkExcludeCache.Enabled = chkUseTemplate.Checked;
         }
 
         protected override void OnFormClosing(FormClosingEventArgs e)
@@ -767,6 +873,214 @@ namespace ChromeShortcutGenerator
             bool existed = File.Exists(lnk);
             CreateShortcut(shell, lnk, shortcutDir, "", shortcutDir, "Chrome 分身快捷方式集合");
             return (existed ? "已覆盖桌面入口: " : "已创建桌面入口: ") + name + "  -> " + shortcutDir;
+        }
+
+        // ---------- 模板制作: 创建 / 打开 / 定位 ----------
+
+        // 解析并校验"模板目录"; 通过返回 true 并输出规范化全路径, 否则弹窗提示并返回 false。
+        private bool ResolveTemplateDir(out string templateDir)
+        {
+            templateDir = "";
+            string raw = txtTemplate.Text.Trim();
+            if (raw.Length == 0) { Warn("请先填写“模板目录”。"); return false; }
+            try { templateDir = Path.GetFullPath(raw).TrimEnd('\\'); }
+            catch { Warn("模板目录路径无效。"); return false; }
+            if (IsRootPath(templateDir))
+            { Warn("模板目录不能是盘符根目录, 请指定一个子文件夹。"); return false; }
+            if (LooksLikeSensitivePath(templateDir))
+            { Warn("模板目录位于系统目录或真实 Chrome 用户数据目录下, 已拒绝操作。\r\n" +
+                "请改到一个独立文件夹 (例如 D:\\Chrome_Matrix_Browser\\... )。"); return false; }
+            return true;
+        }
+
+        // 模板快捷方式(.lnk)路径: 放在模板文件夹的同级目录, 文件名同模板文件夹名 + .lnk
+        private static string TemplateLnkPath(string templateDir)
+        {
+            string parent = Path.GetDirectoryName(templateDir);
+            string leaf = Path.GetFileName(templateDir);
+            if (string.IsNullOrEmpty(parent)) parent = templateDir; // 兜底(已排除根目录, 理论不触发)
+            return Path.Combine(parent, leaf + ".lnk");
+        }
+
+        // 在模板目录同级创建/更新指向 Chrome 的快捷方式 (.lnk); 失败弹窗并返回 false。
+        private bool CreateTemplateShortcut(string templateDir, string chrome)
+        {
+            string lnk = TemplateLnkPath(templateDir);
+            string workingDir = Path.GetDirectoryName(Path.GetFullPath(chrome));
+            string args = "--user-data-dir=\"" + templateDir + "\"";
+            object shell = null;
+            try
+            {
+                shell = CreateShell();
+                CreateShortcut(shell, lnk, chrome, args, workingDir,
+                    "Chrome 模板 - 制作好后用于覆盖所有分身");
+                return true;
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(this, "创建模板快捷方式失败: " + ex.Message, "错误",
+                    MessageBoxButtons.OK, MessageBoxIcon.Error);
+                return false;
+            }
+            finally { ReleaseShell(shell); }
+        }
+
+        // 一键创建模板: 建文件夹 + 建快捷方式, 再询问是否立即打开 Chrome 制作模板。
+        // 若模板目录已有内容, 不静默覆盖——弹出选择对话框让用户决定。
+        private void OnCreateTemplate()
+        {
+            string chrome = txtChrome.Text.Trim();
+            if (chrome.Length == 0 || !File.Exists(chrome))
+            { Warn("未找到 chrome.exe, 请点击“探测”或“浏览”指定正确路径。"); return; }
+
+            string templateDir;
+            if (!ResolveTemplateDir(out templateDir)) return;
+
+            string lnk = TemplateLnkPath(templateDir);
+
+            // 关键保护: 模板目录已有内容 → 绝不静默覆盖, 让用户选择如何处理。
+            if (DirHasContent(templateDir))
+            {
+                int choice = ChoiceDialog.Show(this, "模板已存在",
+                    "检测到模板已存在, 且其中已有内容:\r\n" + templateDir +
+                    "\r\n\r\n为避免覆盖你已做好的模板, 请选择如何处理:",
+                    new string[]
+                    {
+                        "保留并打开 (继续制作 / 更新模板)",
+                        "清空重建 (删除现有内容, 慎选)",
+                        "取消"
+                    }, 1);
+
+                if (choice == 0)
+                {
+                    // 保留内容: 刷新快捷方式后直接打开, 不动模板里的任何文件。
+                    if (!CreateTemplateShortcut(templateDir, chrome)) return;
+                    Log("已保留现有模板, 快捷方式已就绪: " + lnk);
+                    LaunchTemplate(false);
+                    return;
+                }
+                if (choice == 1)
+                {
+                    // 清空重建: 永久删除现有内容, 二次强确认。
+                    if (MessageBox.Show(this,
+                            "【危险】将永久删除以下模板目录中的全部内容, 不可恢复:\r\n" + templateDir +
+                            "\r\n\r\n请先确认该模板对应的 Chrome 已【完全关闭】" +
+                            "(否则文件被占用会删除失败)。\r\n\r\n确定清空重建吗?",
+                            "清空重建确认", MessageBoxButtons.YesNo, MessageBoxIcon.Warning,
+                            MessageBoxDefaultButton.Button2) != DialogResult.Yes)
+                        return;
+                    // 防御性安全再校验: 绝不删根目录/系统目录/真实 Chrome 数据目录。
+                    if (IsRootPath(templateDir) || LooksLikeSensitivePath(templateDir))
+                    { Warn("出于安全考虑, 拒绝清空该目录。"); return; }
+                    try { ForceDeleteDirectory(templateDir); }
+                    catch (Exception ex)
+                    {
+                        MessageBox.Show(this,
+                            "清空模板失败 (可能 Chrome 仍打开占用文件): " + ex.Message,
+                            "错误", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                        return;
+                    }
+                    Log("已清空模板目录, 准备重建: " + templateDir);
+                    // 落到下方“全新创建”继续。
+                }
+                else
+                {
+                    return; // 取消 / 关闭
+                }
+            }
+
+            // ---- 全新创建 (空目录 或 清空重建后) ----
+            try { Directory.CreateDirectory(templateDir); }
+            catch (Exception ex)
+            {
+                MessageBox.Show(this, "创建模板文件夹失败: " + ex.Message, "错误",
+                    MessageBoxButtons.OK, MessageBoxIcon.Error);
+                return;
+            }
+
+            if (!CreateTemplateShortcut(templateDir, chrome)) return;
+
+            Log("模板文件夹就绪: " + templateDir);
+            Log("已创建模板快捷方式: " + lnk);
+
+            if (MessageBox.Show(this,
+                    "模板已创建:\r\n" + templateDir + "\r\n\r\n" +
+                    "是否立即打开 Chrome 开始制作模板?\r\n" +
+                    "(登录账号、安装扩展、调好设置后, 关闭 Chrome 即可。)",
+                    "创建完成", MessageBoxButtons.YesNo, MessageBoxIcon.Information) == DialogResult.Yes)
+                LaunchTemplate(false);
+        }
+
+        // 打开模板: 直接启动 chrome --user-data-dir=模板目录, 进入制作/更新状态。
+        // fromButton=true 由"打开模板"按钮调用, 文件夹缺失时先征求确认再创建。
+        private void LaunchTemplate(bool fromButton)
+        {
+            string chrome = txtChrome.Text.Trim();
+            if (chrome.Length == 0 || !File.Exists(chrome))
+            { Warn("未找到 chrome.exe, 请点击“探测”或“浏览”指定正确路径。"); return; }
+
+            string templateDir;
+            if (!ResolveTemplateDir(out templateDir)) return;
+
+            if (!Directory.Exists(templateDir))
+            {
+                if (fromButton &&
+                    !Confirm("模板文件夹尚不存在:\r\n" + templateDir + "\r\n\r\n是否现在创建并打开?"))
+                    return;
+                try { Directory.CreateDirectory(templateDir); }
+                catch (Exception ex)
+                {
+                    MessageBox.Show(this, "创建模板文件夹失败: " + ex.Message, "错误",
+                        MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    return;
+                }
+            }
+
+            try
+            {
+                ProcessStartInfo psi = new ProcessStartInfo(chrome);
+                psi.Arguments = "--user-data-dir=\"" + templateDir + "\"";
+                psi.WorkingDirectory = Path.GetDirectoryName(Path.GetFullPath(chrome));
+                psi.UseShellExecute = true;
+                Process.Start(psi);
+                Log("已打开模板 Chrome: " + templateDir + "  (制作/更新完成后请关闭 Chrome)");
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(this, "打开模板失败: " + ex.Message, "错误",
+                    MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+        }
+
+        // 打开模板文件夹: 在资源管理器中定位并高亮模板快捷方式, 方便手动双击;
+        // 快捷方式不存在时退回打开其所在目录。
+        private void OpenTemplateFolder()
+        {
+            string templateDir;
+            if (!ResolveTemplateDir(out templateDir)) return;
+
+            try
+            {
+                string lnk = TemplateLnkPath(templateDir);
+                if (File.Exists(lnk))
+                {
+                    Process.Start("explorer.exe", "/select,\"" + lnk + "\"");
+                    return;
+                }
+                // 没有快捷方式: 打开其所在的父目录(存在则), 否则打开模板目录本身。
+                string parent = Path.GetDirectoryName(lnk);
+                string toOpen = (!string.IsNullOrEmpty(parent) && Directory.Exists(parent))
+                    ? parent : templateDir;
+                if (!Directory.Exists(toOpen)) Directory.CreateDirectory(toOpen);
+                ProcessStartInfo psi = new ProcessStartInfo(toOpen);
+                psi.UseShellExecute = true;
+                Process.Start(psi);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(this, "打开模板文件夹失败: " + ex.Message, "错误",
+                    MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
         }
 
         // ---------- 生成核心 ----------
