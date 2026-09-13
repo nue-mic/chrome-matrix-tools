@@ -1,24 +1,26 @@
 @echo off
+rem 本文件必须以 GBK(936, 系统 ANSI) 无 BOM 保存: cmd 按系统 ANSI 解析 .bat,
+rem 存成 UTF-8 会因字节错位吞掉引号等字符, 导致脚本逻辑被破坏。
 chcp 936 >nul
 setlocal
 rem ===== 一键打包 Chrome多开生成器 独立版 (自包含单文件, 客户零安装) =====
-rem 产物: 同目录 Chrome多开生成器.exe (约 60MB), 任何 64 位 Windows 双击即用, 无需安装 .NET。
-rem 前提: 本机已装 .NET SDK。
+rem 产物: 同目录 Chrome多开生成器.exe (约 65MB), 任何 64 位 Windows 双击即用, 无需安装 .NET。
+rem 前提: 本机已装 .NET SDK 10.0 或更高版本 (项目目标框架为 net10.0-windows)。
 
 cd /d "%~dp0"
 
-rem 1) 定位 dotnet: 先查 PATH, 再退回默认安装目录 (兼容各种环境)
+rem 1) 定位 dotnet: 先查 PATH, 再回退到默认安装目录 (兼容各种环境)
 set "DOTNET="
 for %%D in (dotnet.exe) do if not defined DOTNET set "DOTNET=%%~$PATH:D"
 if not defined DOTNET if exist "%ProgramFiles%\dotnet\dotnet.exe" set "DOTNET=%ProgramFiles%\dotnet\dotnet.exe"
 if not defined DOTNET if exist "C:\Program Files\dotnet\dotnet.exe" set "DOTNET=C:\Program Files\dotnet\dotnet.exe"
 if not defined DOTNET (
-    echo [错误] 未找到 dotnet 命令。请先安装 .NET SDK: https://dotnet.microsoft.com/download
+    echo [错误] 未找到 dotnet 命令, 请先安装 .NET SDK: https://dotnet.microsoft.com/download
     pause
     exit /b 1
 )
 
-rem 2) 缺图标就用 Windows 自带的 .NET Framework 编译器现绘 app.ico
+rem 2) 缺图标时, 用 Windows 自带的 .NET Framework 编译器现画一个 app.ico
 if exist "%~dp0app.ico" goto :build
 echo 未发现 app.ico, 正在生成应用图标 ...
 set "CSC=C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe"
@@ -34,7 +36,7 @@ del "%~dp0MakeIcon.exe" >nul 2>nul
 
 :build
 rem 3) 自包含单文件发布, 直接输出到本目录 (覆盖旧的 exe)
-echo 正在打包独立版 (首次会联网下载运行时, 请耐心等待) ...
+echo 正在打包独立版 (首次打包需下载运行时, 请耐心等待) ...
 "%DOTNET%" publish "%~dp0pack\pack.csproj" -c Release -o "."
 if errorlevel 1 (
     echo.
@@ -49,5 +51,5 @@ rmdir /s /q "%~dp0pack\bin" >nul 2>nul
 
 echo.
 echo [成功] 已生成独立版: %~dp0Chrome多开生成器.exe
-echo 把这一个 exe 发给客户即可, 任何 64 位 Windows 双击运行, 无需安装任何东西。
+echo 这一个 exe 就能发给客户使用, 任何 64 位 Windows 双击即用, 无需安装任何东西。
 pause

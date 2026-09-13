@@ -3,7 +3,7 @@
   <!-- 自包含单文件发布: 把 .NET 运行时一起塞进一个 exe, 目标机器零安装即可运行 -->
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
-    <TargetFramework>net7.0-windows</TargetFramework>
+    <TargetFramework>net10.0-windows</TargetFramework>
     <UseWindowsForms>true</UseWindowsForms>
     <Nullable>disable</Nullable>
     <ImplicitUsings>disable</ImplicitUsings>
@@ -27,16 +27,15 @@
     <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
     <DebugType>none</DebugType>
     <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+
+    <!-- WFO1000: .NET 9+ 的 WinForms 分析器要求自定义控件的公共属性声明设计器序列化方式。
+         本项目全部用代码构建界面, 不使用 WinForms 设计器, 该诊断对此无意义。 -->
+    <NoWarn>$(NoWarn);WFO1000</NoWarn>
   </PropertyGroup>
 
   <!-- 只编译主程序源码 (排除 MakeIcon.cs, 它有自己的 Main) -->
   <ItemGroup>
     <Compile Include="..\ChromeShortcutGenerator.cs" />
-  </ItemGroup>
-
-  <!-- .NET 7 下访问注册表(探测 Chrome 路径)需要此包 -->
-  <ItemGroup>
-    <PackageReference Include="Microsoft.Win32.Registry" Version="5.0.0" />
   </ItemGroup>
 
 </Project>

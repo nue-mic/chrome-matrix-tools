@@ -1,0 +1,6 @@
+# 批处理脚本必须是 CRLF 换行: 中文(GBK)批处理双击运行的必须条件,
+# 不受各人 core.autocrlf 配置影响。
+*.bat text eol=crlf
+
+# PowerShell 脚本同样固定 CRLF
+*.ps1 text eol=crlf

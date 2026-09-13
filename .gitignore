@@ -8,6 +8,10 @@ pack/obj/
 pack/bin/
 bin/
 obj/
+dist/
+
+# Visual Studio 本地缓存
+.vs/
 
 # 临时工作文件
 _*.bat

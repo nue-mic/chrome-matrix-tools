@@ -1,0 +1,74 @@
+name: 打包独立版 exe
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+# 同一分支/tag 有新推送时, 取消还在跑的旧构建
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: 构建 (windows-latest)
+    runs-on: windows-latest
+    permissions:
+      contents: write   # 仅 tag 触发时用于创建 Release
+    steps:
+      - name: 检出源码
+        uses: actions/checkout@v4
+
+      - name: 安装 .NET SDK 10
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: 自包含单文件发布
+        run: dotnet publish pack/pack.csproj -c Release -o dist
+
+      - name: 校验产物
+        id: verify
+        shell: pwsh
+        run: |
+          $exe = @(Get-ChildItem dist -Filter *.exe -File)
+          if ($exe.Count -ne 1) { throw "预期 dist 下恰好 1 个 exe, 实际 $($exe.Count) 个" }
+          $f  = $exe[0]
+          $mb = [math]::Round($f.Length / 1MB, 1)
+          Write-Host "产物   : $($f.Name)"
+          Write-Host "体积   : $mb MB"
+          Write-Host "版本   : $($f.VersionInfo.FileVersion)"
+          Write-Host "产品名 : $($f.VersionInfo.ProductName)"
+          # 自包含发布约 47MB; 明显偏小说明退化成了依赖框架的发布
+          if ($f.Length -lt 20MB) { throw "产物仅 $mb MB, 不像自包含单文件发布" }
+          "exe_path=$($f.FullName)" >> $env:GITHUB_OUTPUT
+          "version=$($f.VersionInfo.FileVersion)" >> $env:GITHUB_OUTPUT
+
+      - name: 上传构建产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: Chrome多开生成器
+          path: dist/*.exe
+          retention-days: 30
+          if-no-files-found: error
+
+      - name: 发布 Release (仅 tag 触发)
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $notes = @(
+            '自包含单文件版, 已把 .NET 运行时打包进去 —— 任何 64 位 Windows 双击即用, 无需安装 .NET。',
+            '',
+            '文件版本: ${{ steps.verify.outputs.version }}',
+            '构建来源: ${{ github.sha }}'
+          ) -join "`n"
+          gh release create $env:GITHUB_REF_NAME '${{ steps.verify.outputs.exe_path }}' --title $env:GITHUB_REF_NAME --notes $notes
