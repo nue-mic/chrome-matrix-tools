@@ -65,10 +65,22 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          $notes = @(
+          $tag = $env:GITHUB_REF_NAME
+          # GitHub 会剥掉 Release 附件名里的非 ASCII 字符 (中文名会变成 Chrome.exe),
+          # 所以改用带版本号的 ASCII 名上传。
+          $asset = "ChromeMatrixTools-$tag-win-x64.exe"
+          Copy-Item -LiteralPath '${{ steps.verify.outputs.exe_path }}' -Destination $asset
+
+          # 说明写文件再用 --notes-file, 避免多行字符串在命令行上被转义
+          @(
             '自包含单文件版, 已把 .NET 运行时打包进去 —— 任何 64 位 Windows 双击即用, 无需安装 .NET。',
             '',
-            '文件版本: ${{ steps.verify.outputs.version }}',
-            '构建来源: ${{ github.sha }}'
-          ) -join "`n"
-          gh release create $env:GITHUB_REF_NAME '${{ steps.verify.outputs.exe_path }}' --title $env:GITHUB_REF_NAME --notes $notes
+            '- 文件版本: ${{ steps.verify.outputs.version }}',
+            '- 构建来源: ${{ github.sha }}',
+            '- 下载后可改名成 `Chrome多开生成器.exe`, 功能不受文件名影响'
+          ) | Set-Content -LiteralPath notes.md -Encoding utf8
+
+          # 允许同一个 tag 重新发布: 已存在的 Release 先删掉, 保留 tag 本身
+          gh release view $tag > $null 2>&1
+          if ($LASTEXITCODE -eq 0) { gh release delete $tag --yes }
+          gh release create $tag $asset --title $tag --notes-file notes.md
