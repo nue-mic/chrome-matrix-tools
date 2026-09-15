@@ -15,8 +15,8 @@
     <AssemblyTitle>Chrome 多开快捷方式生成器</AssemblyTitle>
     <Description>批量生成 Chrome 多账号分身快捷方式 (自包含单文件版, 免安装 .NET)</Description>
     <Company>Chrome Matrix Tools</Company>
-    <Version>2.2.0</Version>
-    <FileVersion>2.2.0.0</FileVersion>
+    <Version>2.3.0</Version>
+    <FileVersion>2.3.0.0</FileVersion>
     <ApplicationIcon>..\app.ico</ApplicationIcon>
 
     <!-- 单文件 / 自包含 / 压缩, 减小体积并免安装 -->

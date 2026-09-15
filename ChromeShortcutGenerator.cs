@@ -10,6 +10,7 @@
 // 注意: NetFx4 下单文件全路径 >260 字符会跳过(计入"未复制"告警); 默认排除缓存已大幅降低概率。
 
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Drawing2D;
@@ -17,6 +18,7 @@ using System.IO;
 using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Text.Json;
 using System.Windows.Forms;
 using Microsoft.Win32;
 
@@ -285,9 +287,259 @@ namespace ChromeShortcutGenerator
         }
     }
 
+    // ---------- 配置快照: 界面上所有可保存的字段 ----------
+    public class ConfigSnapshot
+    {
+        public string BaseDir { get; set; }
+        public string Name { get; set; }
+        public string ChromePath { get; set; }
+        public string UserDataDir { get; set; }
+        public string ShortcutDir { get; set; }
+        public string TemplateDir { get; set; }
+        public string Prefix { get; set; }
+        public string DesktopName { get; set; }
+        public int Start { get; set; }
+        public int End { get; set; }
+        public bool Overwrite { get; set; }
+        public bool UseTemplate { get; set; }
+        public bool ExcludeCache { get; set; }
+        public bool CreateDesktop { get; set; }
+    }
+
+    // ---------- 一条历史记录: 某次成功生成时的配置快照 ----------
+    public class HistoryEntry
+    {
+        public string Time { get; set; }          // yyyy-MM-dd HH:mm
+        public int Created { get; set; }          // 本次新建的快捷方式数
+        public ConfigSnapshot Config { get; set; }
+
+        // 列表里显示的一行摘要
+        public string Summary()
+        {
+            if (Config == null) return Time;
+            int n = Config.End - Config.Start + 1;
+            string s = Time + "   " + Config.Prefix + Config.Start + " ~ " + Config.Prefix + Config.End
+                     + "  (" + n + " 个";
+            if (Created > 0) s += ", 新建 " + Created;
+            s += ")";
+            if (Config.UseTemplate) s += "   [模板]";
+            s += "   " + Config.UserDataDir;
+            return s;
+        }
+    }
+
+    // ---------- 落盘的全部内容 ----------
+    public class AppSettings
+    {
+        public ConfigSnapshot Current { get; set; }
+        public List<HistoryEntry> History { get; set; }
+
+        public void AddHistory(ConfigSnapshot c, int created)
+        {
+            if (c == null) return;
+            if (History == null) History = new List<HistoryEntry>();
+            HistoryEntry h = new HistoryEntry();
+            h.Time = DateTime.Now.ToString("yyyy-MM-dd HH:mm");
+            h.Created = created;
+            h.Config = c;
+            History.Insert(0, h);                       // 最新的排最前
+            while (History.Count > ConfigStore.MaxHistory)
+                History.RemoveAt(History.Count - 1);
+        }
+    }
+
+    // ---------- 配置读写 (%APPDATA%\ChromeMatrixTools\settings.json) ----------
+    // 读写失败一律静默忽略: 配置只是便利功能, 绝不能影响主流程。
+    static class ConfigStore
+    {
+        public const int MaxHistory = 20;
+
+        public static string FilePath()
+        {
+            string dir = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+                "ChromeMatrixTools");
+            return Path.Combine(dir, "settings.json");
+        }
+
+        public static AppSettings Load()
+        {
+            try
+            {
+                string p = FilePath();
+                if (!File.Exists(p)) return new AppSettings();
+                string json = File.ReadAllText(p, Encoding.UTF8);
+                if (json.Trim().Length == 0) return new AppSettings();
+                AppSettings s = JsonSerializer.Deserialize<AppSettings>(json);
+                return s != null ? s : new AppSettings();
+            }
+            catch { return new AppSettings(); }   // 文件损坏/被手改坏了也要能正常启动
+        }
+
+        public static void Save(AppSettings s)
+        {
+            try
+            {
+                string p = FilePath();
+                Directory.CreateDirectory(Path.GetDirectoryName(p));
+                JsonSerializerOptions o = new JsonSerializerOptions();
+                o.WriteIndented = true;
+                // 中文路径不转成 \uXXXX, 方便用记事本直接看
+                o.Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping;
+                File.WriteAllText(p, JsonSerializer.Serialize(s, o), Encoding.UTF8);
+            }
+            catch { }
+        }
+    }
+
+    // ---------- 历史记录对话框 (双击或“套用”把该条配置填回界面) ----------
+    class HistoryDialog : Form
+    {
+        private ListBox _list;
+        private List<HistoryEntry> _items;
+        private ConfigSnapshot _chosen;
+        private string _chosenTime = "";
+        private bool _changed;
+
+        public ConfigSnapshot Chosen { get { return _chosen; } }
+        public string ChosenTime { get { return _chosenTime; } }
+        public bool Changed { get { return _changed; } }   // 删过条目, 需要回写文件
+
+        protected override CreateParams CreateParams
+        {
+            get { CreateParams cp = base.CreateParams; cp.ClassStyle |= 0x00020000; return cp; }
+        }
+
+        public HistoryDialog(Form owner, List<HistoryEntry> items)
+        {
+            _items = items;
+            this.FormBorderStyle = FormBorderStyle.None;
+            this.StartPosition = FormStartPosition.CenterParent;
+            this.BackColor = Theme.CardBg;
+            this.ShowInTaskbar = false;
+            this.MaximizeBox = false; this.MinimizeBox = false;
+            this.KeyPreview = true;
+            this.DoubleBuffered = true;
+            this.Font = owner.Font;
+
+            const int W = 760, pad = 22;
+            int y = pad;
+
+            Label title = new Label();
+            title.Text = "历史记录"; title.AutoSize = true;
+            title.Font = new Font(this.Font.FontFamily, 11.5F, FontStyle.Bold);
+            title.ForeColor = Theme.Accent; title.BackColor = Theme.CardBg;
+            title.Location = new Point(pad, y);
+            this.Controls.Add(title);
+            y += title.PreferredHeight + 6;
+
+            Label hint = new Label();
+            hint.Text = "选中一条后点『套用』, 把当时的配置整套填回界面 (双击列表同样可套用)。";
+            hint.AutoSize = true;
+            hint.ForeColor = Theme.TextSecondary; hint.BackColor = Theme.CardBg;
+            hint.Location = new Point(pad, y);
+            this.Controls.Add(hint);
+            y += hint.PreferredHeight + 10;
+
+            _list = new ListBox();
+            _list.SetBounds(pad, y, W - pad * 2, 268);
+            _list.BorderStyle = BorderStyle.FixedSingle;
+            _list.ForeColor = Theme.TextPrimary;
+            _list.HorizontalScrollbar = true;
+            _list.IntegralHeight = false;
+            _list.DoubleClick += delegate { Apply(); };
+            this.Controls.Add(_list);
+            y += _list.Height + 14;
+
+            Reload();
+
+            int bw = 116, bx = pad;
+            PillButton bApply = new PillButton();
+            bApply.Text = "套用"; bApply.Primary = true; bApply.BackColor = Theme.CardBg;
+            bApply.SetBounds(bx, y, bw, 34);
+            bApply.Click += delegate { Apply(); };
+            this.Controls.Add(bApply); bx += bw + 10;
+
+            PillButton bDel = new PillButton();
+            bDel.Text = "删除选中"; bDel.BackColor = Theme.CardBg;
+            bDel.SetBounds(bx, y, bw, 34);
+            bDel.Click += delegate { DeleteSelected(); };
+            this.Controls.Add(bDel); bx += bw + 10;
+
+            PillButton bClear = new PillButton();
+            bClear.Text = "清空全部"; bClear.Danger = true; bClear.BackColor = Theme.CardBg;
+            bClear.SetBounds(bx, y, bw, 34);
+            bClear.Click += delegate { ClearAll(); };
+            this.Controls.Add(bClear);
+
+            PillButton bClose = new PillButton();
+            bClose.Text = "关闭"; bClose.BackColor = Theme.CardBg;
+            bClose.SetBounds(W - pad - bw, y, bw, 34);
+            bClose.Click += delegate { this.Close(); };
+            this.Controls.Add(bClose);
+
+            this.ClientSize = new Size(W, y + 34 + pad);
+
+            this.KeyDown += delegate(object s, KeyEventArgs e)
+            {
+                if (e.KeyCode == Keys.Escape) this.Close();
+            };
+        }
+
+        private void Reload()
+        {
+            _list.Items.Clear();
+            foreach (HistoryEntry h in _items) _list.Items.Add(h.Summary());
+            if (_list.Items.Count > 0) _list.SelectedIndex = 0;
+        }
+
+        private void Apply()
+        {
+            int i = _list.SelectedIndex;
+            if (i < 0 || i >= _items.Count) return;
+            _chosen = _items[i].Config;
+            _chosenTime = _items[i].Time;
+            this.Close();
+        }
+
+        private void DeleteSelected()
+        {
+            int i = _list.SelectedIndex;
+            if (i < 0 || i >= _items.Count) return;
+            _items.RemoveAt(i);
+            _changed = true;
+            Reload();
+        }
+
+        private void ClearAll()
+        {
+            if (_items.Count == 0) return;
+            if (MessageBox.Show(this, "确定清空全部 " + _items.Count + " 条历史记录?", "清空历史",
+                    MessageBoxButtons.YesNo, MessageBoxIcon.Warning,
+                    MessageBoxDefaultButton.Button2) != DialogResult.Yes) return;
+            _items.Clear();
+            _changed = true;
+            Reload();
+        }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            base.OnPaint(e);
+            using (Pen p = new Pen(Theme.CardBorder))
+                e.Graphics.DrawRectangle(p, 0, 0, this.Width - 1, this.Height - 1);
+        }
+    }
+
     public class MainForm : Form
     {
         private const int MaxCount = 10000;
+
+        // 默认配置 ("恢复默认"按钮还原到这一组)
+        private const string DefaultBaseDir = @"F:\Chrome_Matrix_Browser";
+        private const string DefaultName = "Github";
+        private const string DefaultDesktopName = "Github集合";
+        private const int DefaultStart = 1;
+        private const int DefaultEnd = 20;
 
         private static readonly string[] ExcludedFiles =
             { "SingletonLock", "SingletonCookie", "SingletonSocket", "lockfile" };
@@ -323,6 +575,11 @@ namespace ChromeShortcutGenerator
 
         private bool busy = false;
 
+        private AppSettings settings = new AppSettings();
+        // 整批填值 (恢复配置/套用历史/恢复默认) 期间抑制"基本目录/名称"联动,
+        // 否则手改过的自定义路径会被推导值冲掉。
+        private bool suppressDerive = false;
+
         public MainForm()
         {
             this.DoubleBuffered = true;
@@ -332,6 +589,7 @@ namespace ChromeShortcutGenerator
             // 设默认值后再挂"基本目录/名称"联动 (避免初始化时误触发)
             txtBase.TextChanged += delegate { DeriveFromBaseName(); };
             txtName.TextChanged += delegate { DeriveFromBaseName(); };
+            LoadSavedConfig();                // 有上次保存的配置就填回
             UpdateTemplateEnabled();
             this.ActiveControl = btnGenerate; // 避免启动时输入框默认全选高亮
         }
@@ -400,6 +658,9 @@ namespace ChromeShortcutGenerator
             // 卡片1: 基础配置 (含 基本目录 / 名称 两个联动源)
             CardPanel c1 = MakeCard(16, 56, 688, 224);
             AddTitle(c1, "基础配置", 18, 12);
+            // 标题行右侧: 历史记录 / 恢复默认 (锚右, 窄窗口下不会被截断)
+            AddBrowse(c1, "历史记录", 500, 8, 88, delegate { OnShowHistory(); });
+            AddBrowse(c1, "恢复默认", 596, 8, 88, delegate { OnResetDefaults(); });
             AddFieldLabel(c1, "基本目录", 18, 46);
             txtBase = AddInput(c1, 110, 42, 392);
             AddBrowse(c1, "浏览", 510, 42, 162, delegate { BrowseFolder(txtBase); });
@@ -553,7 +814,7 @@ namespace ChromeShortcutGenerator
                 {
                     TextRenderer.DrawText(g, titleText, tf, new Point(52, 13), Theme.TextPrimary);
                     Size ts = TextRenderer.MeasureText(g, titleText, tf);
-                    TextRenderer.DrawText(g, "v2.1", vf,
+                    TextRenderer.DrawText(g, "v2.3", vf,
                         new Point(52 + ts.Width + 2, 17), Theme.TextSecondary);
                 }
             };
@@ -637,6 +898,7 @@ namespace ChromeShortcutGenerator
         // 基本目录 / 名称 改动时, 推导下面的路径 (加载完成后才挂此事件, 不会冲掉已有配置)
         private void DeriveFromBaseName()
         {
+            if (suppressDerive) return;   // 整批填值期间不推导
             string baseDir = txtBase.Text.Trim();
             string name = txtName.Text.Trim();
             if (baseDir.Length == 0 || name.Length == 0) return;
@@ -723,14 +985,15 @@ namespace ChromeShortcutGenerator
                     MessageBoxButtons.OK, MessageBoxIcon.Information);
                 return;
             }
+            SaveCurrentConfig();   // 关窗时留存当前配置, 下次启动填回
             base.OnFormClosing(e);
         }
 
-        // ---------- 默认值 (全部写死在 exe 中, 不读写任何配置文件) ----------
+        // ---------- 默认值 (写死在 exe 中; "恢复默认"按钮还原到这一组) ----------
         private void SetDefaults()
         {
-            string baseDir = @"D:\Chrome_Matrix_Browser";
-            string name = "Github";
+            string baseDir = DefaultBaseDir;
+            string name = DefaultName;
             txtBase.Text = baseDir;
             txtName.Text = name;
             txtChrome.Text = DetectChrome();
@@ -738,14 +1001,127 @@ namespace ChromeShortcutGenerator
             txtShortcut.Text = Path.Combine(baseDir, name + "_Multiple", name + "_ShortCuts");
             txtTemplate.Text = Path.Combine(baseDir, name + "_Multiple", name + "_Template_UserData");
             txtPrefix.Text = name + "_";
-            txtDesktop.Text = "Github集合";
-            numStart.Value = 1;
-            numEnd.Value = 20;
+            txtDesktop.Text = DefaultDesktopName;
+            numStart.Value = DefaultStart;
+            numEnd.Value = DefaultEnd;
             rbSkip.Checked = true;
             rbOverwrite.Checked = false;
             chkUseTemplate.Checked = false;
             chkExcludeCache.Checked = true;
             chkDesktop.Checked = true;
+        }
+
+        // ---------- 配置留存 / 恢复默认 / 历史记录 ----------
+
+        // 启动时: 有上次保存的配置就整套填回
+        private void LoadSavedConfig()
+        {
+            settings = ConfigStore.Load();
+            if (settings.Current == null) return;
+            ApplySnapshot(settings.Current);
+            Log("已恢复上次的配置 (点『恢复默认』可还原)。");
+        }
+
+        // 把界面上的当前配置收成一个快照
+        private ConfigSnapshot CollectSnapshot()
+        {
+            ConfigSnapshot c = new ConfigSnapshot();
+            c.BaseDir = txtBase.Text;
+            c.Name = txtName.Text;
+            c.ChromePath = txtChrome.Text;
+            c.UserDataDir = txtUserData.Text;
+            c.ShortcutDir = txtShortcut.Text;
+            c.TemplateDir = txtTemplate.Text;
+            c.Prefix = txtPrefix.Text;
+            c.DesktopName = txtDesktop.Text;
+            c.Start = (int)numStart.Value;
+            c.End = (int)numEnd.Value;
+            c.Overwrite = rbOverwrite.Checked;
+            c.UseTemplate = chkUseTemplate.Checked;
+            c.ExcludeCache = chkExcludeCache.Checked;
+            c.CreateDesktop = chkDesktop.Checked;
+            return c;
+        }
+
+        // 把一个快照填回界面 (期间抑制联动, 保住手改过的自定义路径)
+        private void ApplySnapshot(ConfigSnapshot c)
+        {
+            if (c == null) return;
+            suppressDerive = true;
+            try
+            {
+                if (c.BaseDir != null) txtBase.Text = c.BaseDir;
+                if (c.Name != null) txtName.Text = c.Name;
+                // Chrome 路径若已失效(换机器/重装), 回退到重新探测
+                if (!string.IsNullOrEmpty(c.ChromePath) && File.Exists(c.ChromePath))
+                    txtChrome.Text = c.ChromePath;
+                else
+                    txtChrome.Text = DetectChrome();
+                if (c.UserDataDir != null) txtUserData.Text = c.UserDataDir;
+                if (c.ShortcutDir != null) txtShortcut.Text = c.ShortcutDir;
+                if (c.TemplateDir != null) txtTemplate.Text = c.TemplateDir;
+                if (c.Prefix != null) txtPrefix.Text = c.Prefix;
+                if (c.DesktopName != null) txtDesktop.Text = c.DesktopName;
+                numStart.Value = ClampCount(c.Start, DefaultStart);
+                numEnd.Value = ClampCount(c.End, DefaultEnd);
+                rbOverwrite.Checked = c.Overwrite;
+                rbSkip.Checked = !c.Overwrite;
+                chkUseTemplate.Checked = c.UseTemplate;
+                chkExcludeCache.Checked = c.ExcludeCache;
+                chkDesktop.Checked = c.CreateDesktop;
+            }
+            finally { suppressDerive = false; }
+            UpdateTemplateEnabled();
+        }
+
+        // 配置文件被手改坏时, 编号可能越界, 这里兜住 (NumericUpDown 越界会抛异常)
+        private static decimal ClampCount(int v, int fallback)
+        {
+            if (v <= 0) return fallback;
+            if (v > MaxCount) return MaxCount;
+            return v;
+        }
+
+        // 保存当前配置 (关窗时、生成成功后各存一次)
+        private void SaveCurrentConfig()
+        {
+            settings.Current = CollectSnapshot();
+            ConfigStore.Save(settings);
+        }
+
+        private void OnResetDefaults()
+        {
+            if (!Confirm("将把所有配置恢复为默认值 (基本目录 " + DefaultBaseDir + "),\r\n" +
+                         "当前填写的内容会被覆盖。\r\n\r\n历史记录不会被清空。确定继续?")) return;
+            suppressDerive = true;
+            try { SetDefaults(); }
+            finally { suppressDerive = false; }
+            UpdateTemplateEnabled();
+            SaveCurrentConfig();
+            Log("已恢复默认配置。");
+        }
+
+        private void OnShowHistory()
+        {
+            if (settings.History == null || settings.History.Count == 0)
+            {
+                MessageBox.Show(this,
+                    "还没有历史记录。\r\n每次『一键生成』成功后会自动记录一条 (最多保留 " +
+                    ConfigStore.MaxHistory + " 条)。",
+                    "历史记录", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+            using (HistoryDialog d = new HistoryDialog(this, settings.History))
+            {
+                d.ShowDialog(this);
+                if (d.Changed) ConfigStore.Save(settings);   // 删除/清空后立即落盘
+                if (d.Chosen != null)
+                {
+                    ApplySnapshot(d.Chosen);
+                    SaveCurrentConfig();
+                    Log("已套用历史记录: " + d.ChosenTime);
+                }
+            }
         }
 
         // ---------- Chrome 探测 ----------
@@ -889,7 +1265,7 @@ namespace ChromeShortcutGenerator
             { Warn("模板目录不能是盘符根目录, 请指定一个子文件夹。"); return false; }
             if (LooksLikeSensitivePath(templateDir))
             { Warn("模板目录位于系统目录或真实 Chrome 用户数据目录下, 已拒绝操作。\r\n" +
-                "请改到一个独立文件夹 (例如 D:\\Chrome_Matrix_Browser\\... )。"); return false; }
+                "请改到一个独立文件夹 (例如 F:\\Chrome_Matrix_Browser\\... )。"); return false; }
             return true;
         }
 
@@ -1111,7 +1487,7 @@ namespace ChromeShortcutGenerator
             if (txtUserData.Text.Trim().Length == 0 || txtShortcut.Text.Trim().Length == 0)
             { Warn("数据目录和快捷方式目录都必须填写。"); return; }
             if (IsRootPath(userData))
-            { Warn("数据目录不能是盘符根目录, 请指定一个子文件夹 (例如 D:\\Chrome_UserData)。"); return; }
+            { Warn("数据目录不能是盘符根目录, 请指定一个子文件夹 (例如 F:\\Chrome_UserData)。"); return; }
             if (start > end) { Warn("起始编号不能大于结束编号。"); return; }
             if (PathsEqual(userData, shortcutDir))
             {
@@ -1131,7 +1507,7 @@ namespace ChromeShortcutGenerator
                 {
                     if (LooksLikeSensitivePath(userData))
                     { Warn("数据目录位于系统目录或真实 Chrome 用户数据目录下, 为防止误删已拒绝“覆盖”。\r\n" +
-                        "请把数据目录改到一个独立的空文件夹 (例如 D:\\Chrome_UserData)。"); return; }
+                        "请把数据目录改到一个独立的空文件夹 (例如 F:\\Chrome_UserData)。"); return; }
                     if (MessageBox.Show(this,
                             "【危险】覆盖模式将删除以下目录中已存在的分身, 再用模板重写:\r\n" +
                             userData + "\r\n范围: " + prefix + start + " .. " + prefix + end +
@@ -1269,6 +1645,11 @@ namespace ChromeShortcutGenerator
                 }
 
                 lblProgress.Text = "完成 " + done + " / " + total;
+
+                // 留存本次配置, 并记一条历史 (两次 CollectSnapshot: 避免当前配置与历史条目共用同一对象)
+                settings.Current = CollectSnapshot();
+                settings.AddHistory(CollectSnapshot(), created);
+                ConfigStore.Save(settings);
 
                 bool anyWarn = (failed > 0) || (totalLocked > 0);
                 string summary = (anyWarn ? "生成完成 (有警告)\r\n\r\n" : "生成完成！\r\n\r\n");
